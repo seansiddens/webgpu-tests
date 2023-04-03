@@ -60,26 +60,50 @@ export const main = async () => {
     }
 
     const context = canvas.getContext('webgpu');
+    const devicePixelRatio = window.devicePixelRatio || 1;
+    canvas.width = canvas.clientWidth * devicePixelRatio;
+    canvas.height = canvas.clientHeight * devicePixelRatio;
     const presentationFormat = navigator.gpu.getPreferredCanvasFormat();
 
     context.configure({
         device: device,
         format: presentationFormat,
+        // Specify we want both RENDER_ATTACHMENT and COPY_SRC since we will copy out of swapchain attachment
+        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
         alphaMode: 'opaque',
     });
 
     // Set up shaders and pipelines.
-    const computePipeline = device.createComputePipeline({
-        layout: 'auto',
-        compute: {
-            module: device.createShaderModule({
-                code: computeWGSL,
-            }),
-            entryPoint: 'main',
-        }
-    })
+    // const computePipeline = device.createComputePipeline({
+    //     layout: 'auto',
+    //     compute: {
+    //         module: device.createShaderModule({
+    //             code: computeWGSL,
+    //         }),
+    //         entryPoint: 'main',
+    //     }
+    // })
+
+    // Create bind group layout
+    const bindGroupLayout = device.createBindGroupLayout({
+        entries: [
+            {
+                // Sampler binding
+                binding: 0,
+                visibility: GPUShaderStage.FRAGMENT,
+                sampler: {}, 
+            },
+            {
+                // Texture binding
+                binding: 1,
+                visibility: GPUShaderStage.FRAGMENT,
+                texture: {},
+            },
+        ],
+    });
+
     const fullscreenQuadPipeline = device.createRenderPipeline({
-        layout: 'auto',
+        layout: device.createPipelineLayout({bindGroupLayouts: [bindGroupLayout]}),
         vertex: {
             module: device.createShaderModule({
                 code: vertWGSL,
@@ -101,6 +125,43 @@ export const main = async () => {
     });
 
 
+    // We will copy the frame's rendering results into this texture and sample it next frame.
+    const outputTexture = device.createTexture({
+        size: [canvas.width, canvas.height],
+        format: presentationFormat,
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+
+    const sampler = device.createSampler({
+        magFilter: 'linear',
+        minFilter: 'linear',
+    });
+
+    const uniformBindGroup = device.createBindGroup({
+        layout: bindGroupLayout,
+        entries: [
+            {
+                binding: 0,
+                resource: sampler,
+            },
+            {
+                binding: 1,
+                resource: outputTexture.createView(),
+            }
+        ],
+    });
+
+    const renderPassDescriptor = {
+        colorAttachments: [
+            {
+                view: undefined, // Assigned later
+                clearValue: { r: 0.5, g: 0.5, b: 0.5, a: 1.0 },
+                loadOp: 'clear',
+                storeOp: 'store',
+            },
+        ],
+    }
+
     // Variables for performance measurement (fps)
     var updatePerformance = true;
     var currentTime, previousTime;
@@ -111,36 +172,43 @@ export const main = async () => {
     function frame() {
         const commandEncoder = device.createCommandEncoder();
 
-        // COMPUTE PASS
-        {
-            const computePass = commandEncoder.beginComputePass();
-            computePass.setPipeline(computePipeline);
-            // TODO: Dynamically set these values instead of hard coding.
-            // computePass.dispatchWorkgroups(1);
-            // computePass.dispatchWorkgroups(
-            //     // Devide # of pixels in canas by workgroup size.
-            //     Math.ceil(1),
-            //     Math.ceil(1)
-            // );
-            computePass.end();
-        }
+        // // COMPUTE PASS
+        // {
+        //     const computePass = commandEncoder.beginComputePass();
+        //     computePass.setPipeline(computePipeline);
+        //     // TODO: Dynamically set these values instead of hard coding.
+        //     // computePass.dispatchWorkgroups(1);
+        //     // computePass.dispatchWorkgroups(
+        //     //     // Devide # of pixels in canas by workgroup size.
+        //     //     Math.ceil(1),
+        //     //     Math.ceil(1)
+        //     // );
+        //     computePass.end();
+        // }
+
+        const swapChainTexture = context.getCurrentTexture();
+        renderPassDescriptor.colorAttachments[0].view = swapChainTexture.createView();
 
         // RENDER PASS
         {
-            const renderPass = commandEncoder.beginRenderPass({
-                colorAttachments: [
-                    {
-                        view: context.getCurrentTexture().createView(),
-                        clearValue: { r: 0.0, g: 0.0, b: 0.0, a: 1.0 },
-                        loadOp: 'clear',
-                        storeOp: 'store',
-                    },
-                ],
-            });
+            const renderPass = commandEncoder.beginRenderPass(renderPassDescriptor);
             renderPass.setPipeline(fullscreenQuadPipeline);
-            renderPass.draw(3, 1, 0, 0);
+            renderPass.setBindGroup(0, uniformBindGroup);
+            renderPass.draw(6, 1, 0, 0);
             renderPass.end();
         }
+
+        // Copy the rendering results from the swapchain into |cubeTexture|.
+        commandEncoder.copyTextureToTexture(
+            {
+                texture: swapChainTexture,
+            },
+            {
+                texture: outputTexture,
+            },
+            [canvas.width, canvas.height],
+        );
+
 
         // SUBMIT COMMANDS
         device.queue.submit([commandEncoder.finish()]);
