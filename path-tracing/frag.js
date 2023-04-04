@@ -1,7 +1,7 @@
 const fragWGSL = `
 
 const M_PI: f32 = 3.141592653589793238462643;
-const SAMPLE_COUNT: u32 = 1;
+const SAMPLE_COUNT: u32 = 0;
 const TRIANGLE_COUNT: u32 = 30;
 const EPSILON: f32 = 0.0001;
 const T_MIN: f32 = 0.001;
@@ -33,8 +33,7 @@ struct Triangle {
 struct HitInfo {
   t: f32,
   hit: bool,
-  color: vec3<f32>,
-  emission: vec3<f32>,
+  tri: Triangle,
 }
 
 fn get_primary_ray_direction(
@@ -101,8 +100,7 @@ fn ray_triangle_intersection(
   // Record hit information.
   hit_info.hit = true;
   hit_info.t = t;
-  hit_info.color = triangle.color;
-  hit_info.emission = triangle.emission;
+  hit_info.tri = triangle;
 
   return hit_info;
 }
@@ -129,8 +127,7 @@ fn ray_mesh_intersection(
       // Hit was closest we've seen so far.
       nearest_hit.t = hit_info.t;
       nearest_hit.hit = true;
-      nearest_hit.color = hit_info.color;
-      nearest_hit.emission = hit_info.emission;
+      nearest_hit.tri = hit_info.tri;
     }
   }
 
@@ -184,6 +181,58 @@ fn sample_hemisphere(
 }
 
 
+// Computes the sum of emitted radiance and reflected radiance due to direct
+// illumination
+// @param point The point being shaded (x)
+// @param tri The triangle on which the point is located
+// @param seed Needed for get_random_numbers()
+// @return A Monte Carlo estimate with N=1 of the direct illumination (L_o(x))
+fn compute_direct_illumination(
+  point: vec3<f32>,
+  tri: Triangle,
+  seed: ptr<function, vec2<u32>>,
+) -> vec3<f32> {
+  var radiance = vec3(0.0);
+
+  // Light being emitted from point.
+  let emitted = tri.emission;
+  radiance += emitted;
+
+  // Calculate reflected radiance due to direct lighting.
+  var reflected = vec3(0.0);
+  // Trace random ray in scene.
+  let omega = sample_hemisphere(get_random_numbers(seed), tri.normal);
+  let reflected_hit = ray_mesh_intersection(point, omega);
+  if (reflected_hit.hit) {
+    reflected += (tri.color / M_PI) * 2.0 * M_PI * reflected_hit.tri.emission * dot(tri.normal, omega);
+  }
+  radiance += reflected;
+
+  return radiance;
+}
+
+
+// Finds the triangle intersected by the given ray and performs shading without
+// global illumination.
+// @param origin The position at which the ray starts
+// @param direction The direction vector of the ray
+// @param seed Needed for get_random_numbers()
+// @return A Monte Carlo estimate of the reflected (direct only) and emitted
+//         radiance at the point intersected by the ray (i.e. the color)
+fn get_direct_ray_radiance(
+  origin: vec3<f32>, 
+  direction: vec3<f32>,
+  seed: ptr<function, vec2<u32>>
+) -> vec3<f32> {
+  var hit_info: HitInfo = ray_mesh_intersection(origin, direction);
+  if (hit_info.hit) {
+    return compute_direct_illumination(origin + hit_info.t * direction, hit_info.tri, seed);
+  } else {
+    return vec3(0.0);
+  }
+}
+
+
 @fragment
 fn main(
   @location(0) fragUV: vec2<f32>
@@ -199,24 +248,18 @@ fn main(
   // Compute the camera ray
   let ray_dir = get_primary_ray_direction(fragUV.x, fragUV.y, camera_position, left_bottom, right, up);
 
-  // var hit_info = ray_mesh_intersection(camera_position, ray_dir);
+  // Use a different seed for each pixel and each frame.
+  let pixel_coord = vec2<u32>(u32(fragUV.x * 8192.0), u32(fragUV.y * 8192.0)); // Not the actual pixel coordinate into the canvas (uses a random scaling factor).
+  var seed = pixel_coord ^ vec2<u32>(frame_info.frame_number << 16);
   var out_color: vec3<f32> = vec3(0.0);
-  // if (hit_info.hit) {
-  //   // Ray hit triangle.
-  //   out_color = vec4(hit_info.color + hit_info.emission, 1.0);
-  // }
-  // return out_color;
-
-  var seed = vec2<u32>(u32(f32(frame_info.frame_number) + (fragUV.x * 8192.0)), u32(f32(frame_info.frame_number) + (fragUV.y * 8192.0)));
-  let sphere_camera_position = vec3(0.0, 3.2, 0.0);
   for (var i: u32 = 0; i < SAMPLE_COUNT; i++) {
-    let normal = normalize(vec3(1.0, 2.0, 3.0));
-    let dir = sample_hemisphere(get_random_numbers(&seed), normal);
-    let gaussian = exp(-100000.0 * (1.0 - dot(ray_dir, normalize(dir - sphere_camera_position))));
-    out_color += 0.5 * vec3(gaussian);
+    out_color += get_direct_ray_radiance(camera_position, ray_dir, &seed);
   }
 
+  // Divide by sample count.
+  out_color /= f32(SAMPLE_COUNT);
   return vec4(out_color, 1.0);
+
 
   // let prevColor = textureSample(myTexture, mySampler, fragUV);
   // return vec4(prevColor.rgb, 1.0);
