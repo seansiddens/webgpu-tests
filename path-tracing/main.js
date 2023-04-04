@@ -1,6 +1,8 @@
+
 import computeWGSL from './compute.js';
 import vertWGSL from './vert.js';
 import fragWGSL from './frag.js';
+
 
 export const main = async () => {
     // Set up canvas and other devices.
@@ -91,7 +93,7 @@ export const main = async () => {
                 // Sampler binding
                 binding: 0,
                 visibility: GPUShaderStage.FRAGMENT,
-                sampler: {}, 
+                sampler: {},
             },
             {
                 // Texture binding
@@ -99,11 +101,17 @@ export const main = async () => {
                 visibility: GPUShaderStage.FRAGMENT,
                 texture: {},
             },
+            {
+                // Frame info
+                binding: 2,
+                visibility: GPUShaderStage.FRAGMENT,
+                buffer: {},
+            },
         ],
     });
 
     const fullscreenQuadPipeline = device.createRenderPipeline({
-        layout: device.createPipelineLayout({bindGroupLayouts: [bindGroupLayout]}),
+        layout: device.createPipelineLayout({ bindGroupLayouts: [bindGroupLayout] }),
         vertex: {
             module: device.createShaderModule({
                 code: vertWGSL,
@@ -137,6 +145,12 @@ export const main = async () => {
         minFilter: 'linear',
     });
 
+
+    const uniformBuffer = device.createBuffer({
+        size: 4,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+
     const uniformBindGroup = device.createBindGroup({
         layout: bindGroupLayout,
         entries: [
@@ -147,6 +161,10 @@ export const main = async () => {
             {
                 binding: 1,
                 resource: outputTexture.createView(),
+            },
+            {
+                binding: 2,
+                resource: {buffer: uniformBuffer},
             }
         ],
     });
@@ -170,21 +188,19 @@ export const main = async () => {
     var frameCounter = 0;
     let t = 0;
     function frame() {
+        // Write frame info to uniform buffer.
+        const frameInfo = new Int32Array(1);
+        frameInfo.set([t], 0);
+        device.queue.writeBuffer(
+            uniformBuffer,
+            0,
+            frameInfo, // Uniform buffer data
+            0,
+            1 // Size of uniform buffer
+        );
+
         const commandEncoder = device.createCommandEncoder();
 
-        // // COMPUTE PASS
-        // {
-        //     const computePass = commandEncoder.beginComputePass();
-        //     computePass.setPipeline(computePipeline);
-        //     // TODO: Dynamically set these values instead of hard coding.
-        //     // computePass.dispatchWorkgroups(1);
-        //     // computePass.dispatchWorkgroups(
-        //     //     // Devide # of pixels in canas by workgroup size.
-        //     //     Math.ceil(1),
-        //     //     Math.ceil(1)
-        //     // );
-        //     computePass.end();
-        // }
 
         const swapChainTexture = context.getCurrentTexture();
         renderPassDescriptor.colorAttachments[0].view = swapChainTexture.createView();
